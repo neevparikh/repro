@@ -11,5 +11,5 @@ class Config:
     heads: int = 4
     layers: int = 4
     # token configs
-    token_padding: str = "max_length"
+    token_padding: str = "longest"
     token_truncation: str = "longest_first"
