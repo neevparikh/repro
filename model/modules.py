@@ -1,18 +1,10 @@
-from dataclasses import dataclass
 from math import sqrt
+from typing import Optional
 
 import torch
 import torch.nn as nn
 
-
-@dataclass
-class Config:
-    context_size: int = 1094
-    vocab_size: int = 50257
-    dim_model: int = 256
-    dim_mlp: int = 512
-    heads: int = 4
-    layers: int = 4
+from config import Config
 
 
 class LayerNorm(nn.Module):
@@ -48,7 +40,7 @@ class MultiHeadAttention(nn.Module):
             ),
         )
 
-    def forward(self, x: torch.Tensor, should_mask: bool) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
         batch_size, token_sequence_length, embedding_dim = x.size()
         assert embedding_dim == self.dim_model
 
@@ -76,7 +68,12 @@ class MultiHeadAttention(nn.Module):
             torch.matmul(queries, keys.transpose(-2, -1)) / self.dim_per_head_sqrt
         )  # (B x H x T x M/H) @ (B x H x M/H x T) -> B x H x T x T
 
-        if should_mask:
+        if mask is None:
+            compatibility_scores = compatibility_scores.masked_fill(
+                self.mask[:, :, :token_sequence_length, :token_sequence_length] == 0,
+                float("-inf"),
+            )
+        else:
             compatibility_scores = compatibility_scores.masked_fill(
                 self.mask[:, :, :token_sequence_length, :token_sequence_length] == 0,
                 float("-inf"),
@@ -120,9 +117,9 @@ class DecoderLayer(nn.Module):
         self.mlp_dropout = nn.Dropout(p=0.1)
         self.mlp_layer_norm = LayerNorm(config.dim_model)
 
-    def forward(self, x, should_mask: bool) -> torch.Tensor:
+    def forward(self, x, mask: Optional[torch.Tensor]) -> torch.Tensor:
         x = self.attention_layer_norm(x)
-        z = self.attention(x, should_mask)  # (B x T x M)
+        z = self.attention(x, mask)  # (B x T x M)
         z = x + self.attention_dropout(z)
 
         z = self.mlp_layer_norm(z)
@@ -138,9 +135,9 @@ class Decoder(nn.Module):
         self.layers = nn.ModuleList([DecoderLayer(config) for _ in range(3)])
         self.last_norm = LayerNorm(config.dim_model)
 
-    def forward(self, x, should_mask) -> torch.Tensor:
+    def forward(self, x, mask: Optional[torch.Tensor]) -> torch.Tensor:
         for layer in self.layers:
-            x = layer(x, should_mask)
+            x = layer(x, mask)
         return self.last_norm(x)  # (B x T x M)
 
 
@@ -170,8 +167,8 @@ class Transformer(nn.Module):
             config.dim_model, config.vocab_size, bias=False
         )
 
-    def forward(self, indices, should_mask=True) -> torch.Tensor:
+    def forward(self, indices, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         embeddings = self.embeddings(indices)  # (B x T x M)
-        attended_embeddings = self.decoder(embeddings, should_mask)  # (B x T x M)
+        attended_embeddings = self.decoder(embeddings, mask)  # (B x T x M)
         logits = self.prediction_head(attended_embeddings)  # (B x T x V)
         return logits.softmax(dim=-1)  # (B x T x V)

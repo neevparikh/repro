@@ -9,6 +9,7 @@ from model.modules import Transformer, Config
 dataset = load_dataset("stas/openwebtext-10k")
 assert isinstance(dataset, DatasetDict)
 tokenizer = AutoTokenizer.from_pretrained("gpt2")
+__import__("pdb").set_trace()
 tokenizer.pad_token = tokenizer.eos_token
 assert tokenizer.vocab_size == Config.vocab_size
 
@@ -16,8 +17,8 @@ dataset = dataset.map(
     lambda data: tokenizer(
         data["text"],
         return_tensors="np",
-        padding="max_length",
-        truncation="longest_first",
+        padding=Config.token_padding,
+        truncation=Config.token_truncation,
         max_length=Config.context_size,
     ),
     batched=True,
