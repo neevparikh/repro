@@ -9,7 +9,9 @@ class Config:
     dim_model: int = 256
     dim_mlp: int = 512
     heads: int = 4
-    layers: int = 4
+    layers: int = 3
+    mlp_dropout: float = 0.1
+    attention_dropout: float = 0.1
     # token configs
     token_padding: str = "longest"
     token_truncation: str = "longest_first"

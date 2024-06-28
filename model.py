@@ -1,5 +1,4 @@
 from math import sqrt
-from typing import Optional
 
 from numerize.numerize import numerize
 import torch
@@ -22,14 +21,14 @@ class LayerNorm(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, config) -> None:
+    def __init__(self) -> None:
         super(MultiHeadAttention, self).__init__()
-        assert config.dim_model % config.heads == 0
-        self.dim_model = config.dim_model
-        self.heads = config.heads
-        self.dim_per_head = config.dim_model // config.heads
+        assert Config.dim_model % Config.heads == 0
+        self.dim_model = Config.dim_model
+        self.heads = Config.heads
+        self.dim_per_head = Config.dim_model // Config.heads
         self.dim_per_head_sqrt = sqrt(self.dim_per_head)
-        self.context_size = config.context_size
+        self.context_size = Config.context_size
 
         self.output_linear = nn.Linear(self.dim_model, self.dim_model)
         self.combined_linear = nn.Linear(self.dim_model, self.dim_model * 3)
@@ -90,10 +89,10 @@ class MultiHeadAttention(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, config) -> None:
+    def __init__(self) -> None:
         super(MLP, self).__init__()
-        self.w1 = nn.Linear(config.dim_model, config.dim_mlp)
-        self.w2 = nn.Linear(config.dim_mlp, config.dim_model)
+        self.w1 = nn.Linear(Config.dim_model, Config.dim_mlp)
+        self.w2 = nn.Linear(Config.dim_mlp, Config.dim_model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.w1(x)  # (B x T x ML)
@@ -102,15 +101,15 @@ class MLP(nn.Module):
 
 
 class DecoderLayer(nn.Module):
-    def __init__(self, config: Config) -> None:
+    def __init__(self) -> None:
         super(DecoderLayer, self).__init__()
-        self.attention = MultiHeadAttention(config)
-        self.attention_dropout = nn.Dropout(p=0.1)
-        self.attention_layer_norm = LayerNorm(config.dim_model)
+        self.attention = MultiHeadAttention()
+        self.attention_dropout = nn.Dropout(p=Config.attention_dropout)
+        self.attention_layer_norm = LayerNorm(Config.dim_model)
 
-        self.mlp = MLP(config)
-        self.mlp_dropout = nn.Dropout(p=0.1)
-        self.mlp_layer_norm = LayerNorm(config.dim_model)
+        self.mlp = MLP()
+        self.mlp_dropout = nn.Dropout(p=Config.mlp_dropout)
+        self.mlp_layer_norm = LayerNorm(Config.dim_model)
 
     def forward(self, x) -> torch.Tensor:
         x = self.attention_layer_norm(x)
@@ -125,10 +124,10 @@ class DecoderLayer(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, config) -> None:
+    def __init__(self) -> None:
         super(Decoder, self).__init__()
-        self.layers = nn.ModuleList([DecoderLayer(config) for _ in range(3)])
-        self.last_norm = LayerNorm(config.dim_model)
+        self.layers = nn.ModuleList([DecoderLayer() for _ in range(Config.layers)])
+        self.last_norm = LayerNorm(Config.dim_model)
 
     def forward(self, x) -> torch.Tensor:
         for layer in self.layers:
@@ -137,10 +136,10 @@ class Decoder(nn.Module):
 
 
 class Embeddings(nn.Module):
-    def __init__(self, config) -> None:
+    def __init__(self) -> None:
         super(Embeddings, self).__init__()
-        self.token_embeddings = nn.Embedding(config.vocab_size, config.dim_model)
-        self.positional_embeddings = nn.Embedding(config.vocab_size, config.dim_model)
+        self.token_embeddings = nn.Embedding(Config.vocab_size, Config.dim_model)
+        self.positional_embeddings = nn.Embedding(Config.vocab_size, Config.dim_model)
 
     def forward(self, indices) -> torch.Tensor:
         _, token_sequence_length = indices.size()  # (B x T)
@@ -154,19 +153,19 @@ class Embeddings(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, config=Config) -> None:
+    def __init__(self, Config=Config) -> None:
         super(Transformer, self).__init__()
-        self.embeddings = Embeddings(config)
-        self.decoder = Decoder(config)
+        self.embeddings = Embeddings()
+        self.decoder = Decoder()
         self.prediction_head = nn.Linear(
-            config.dim_model, config.vocab_size, bias=False
+            Config.dim_model, Config.vocab_size, bias=False
         )
         print(
             f"Model parameters: {numerize(sum([p.numel() for p in self.parameters()]))}"
         )
 
-    def forward(self, indices) -> torch.Tensor:
-        embeddings = self.embeddings(indices)  # (B x T x M)
+    def forward(self, tokens) -> torch.Tensor:
+        embeddings = self.embeddings(tokens)  # (B x T x M)
         attended_embeddings = self.decoder(embeddings)  # (B x T x M)
         logits = self.prediction_head(attended_embeddings)  # (B x T x V)
-        return logits.softmax(dim=-1)  # (B x T x V)
+        return logits

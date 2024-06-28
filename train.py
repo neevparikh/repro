@@ -17,18 +17,20 @@ def train(args: Namespace) -> None:
             return_tensors="pt",
             padding=Config.token_padding,
             truncation=Config.token_truncation,
-            max_length=Config.context_size,
+            max_length=Config.context_size
+            + 1,  # we add one since we shift the training and target by one
         ),
         batched=True,
     )
     dataset = dataset.with_format("torch")
     training_data = dataset["train"]
 
-    dataloader = DataLoader(training_data, batch_size=args.batch_size)  # type: ignore
-
-    for batch in dataloader:
-        __import__("pdb").set_trace()
+    dataloader = DataLoader(training_data, batch_size=args.batch_size, shuffle=True)  # type: ignore
 
     model = Transformer()
-    model.eval()
     model.to(get_device(args))
+
+    for batch in dataloader:
+        tokens, padding_mask = batch["input_ids"], batch["attention_mask"]
+        input_tokens = tokens[:
+
