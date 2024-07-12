@@ -5,7 +5,8 @@ from dataclasses import dataclass
 class Config:
     # model configs
     context_size: int = 1094
-    vocab_size: int = 50257
+    vocab_size: int = 50257 + 1  # plus one is for padding token
+    padding_idx: int = 50257  # last added special token
     dim_model: int = 256
     dim_mlp: int = 512
     heads: int = 4

@@ -1,34 +1,45 @@
 from argparse import Namespace, ArgumentParser
 
-from inference import inference
-from train import train
+from src.inference import inference
+from src.train import train
 
 
 def parser() -> Namespace:
-    parser = ArgumentParser(prog="GPT2", description="Reproduction of GPT2")
+    parser = ArgumentParser(
+        prog="GPT2",
+        description="Reproduction of GPT2",
+    )
 
     # common between train and inference
-    parser.add_argument("--gpu", help="Run on inference on GPU", action="store_true")
-    parser.add_argument(
+    common_parser = ArgumentParser(add_help=False)
+    common_parser.add_argument(
+        "--gpu", help="Run on inference on GPU", action="store_true"
+    )
+    common_parser.add_argument(
         "--checkpoint-path",
         help="Pass in trained model for inference or save models here",
     )
 
     subparsers = parser.add_subparsers(
-        help="Training or inference", dest="subparser_name"
+        help="Training or inference",
+        dest="subparser_name",
+        required=True,
     )
 
     # training
-    train = subparsers.add_parser("train", help="Training")
+    train = subparsers.add_parser("train", help="Training", parents=[common_parser])
     train.add_argument(
         "--small", help="use small 10k dataset for development", action="store_true"
     )
     train.add_argument(
         "--batch-size", help="Batch size for training", default=32, type=int
     )
+    train.add_argument("--lr", help="Learning rate", default=3e-4, type=float)
 
     # inference
-    inference = subparsers.add_parser("inference", help="Inference")
+    inference = subparsers.add_parser(
+        "inference", help="Inference", parents=[common_parser]
+    )
     inference.add_argument("--prompt", help="Run inference on this prompt")
     inference.add_argument(
         "--topk",
@@ -54,9 +65,8 @@ def parser() -> Namespace:
 
 if __name__ == "__main__":
     args = parser()
-    if args.subparser_name == "inference":
-        inference(args)
-    elif args.subparser_name == "train":
-        train(args)
-    else:
-        raise ValueError(args.subparser_name)
+    match args.subparser_name:
+        case "train":
+            train(args)
+        case "inference":
+            inference(args)

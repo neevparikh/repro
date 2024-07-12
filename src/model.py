@@ -3,8 +3,9 @@ from math import sqrt
 from numerize.numerize import numerize
 import torch
 import torch.nn as nn
+from torch.optim import AdamW
 
-from config import Config
+from src.config import Config
 
 
 class LayerNorm(nn.Module):
@@ -64,20 +65,18 @@ class MultiHeadAttention(nn.Module):
             1, 2
         )  # (B x H x T x M/H)
 
-        compatibility_scores = (
-            torch.matmul(queries, keys.transpose(-2, -1)) / self.dim_per_head_sqrt
-        )  # (B x H x T x M/H) @ (B x H x M/H x T) -> B x H x T x T
-
-        compatibility_scores = compatibility_scores.masked_fill(
-            self.mask[:, :, :token_sequence_length, :token_sequence_length] == 0,
-            float("-inf"),
-        )
-
-        p_attn = compatibility_scores.softmax(dim=-1)
-
-        attended_output = torch.matmul(
-            p_attn, values
-        )  # (B x H x T x T) @ (B x H x T x M/H) -> (B x H x T x M/H)
+        # (B x H x T x M/H) @ (B x H x M/H x T) -> B x H x T x T
+        # compatibility_scores = queries @ keys.transpose(-2, -1) / self.dim_per_head_sqrt
+        # mask = self.mask[:, :, :token_sequence_length, :token_sequence_length] == 0
+        # compatibility_scores = compatibility_scores.masked_fill(mask, float("-inf"))
+        # p_attn = compatibility_scores.softmax(dim=-1)
+        # (B x H x T x T) @ (B x H x T x M/H) -> (B x H x T x M/H)
+        # attended_output = p_attn @ values
+        #
+        # Use flash attention, replaces above code
+        attended_output = nn.functional.scaled_dot_product_attention(
+            queries, keys, values, is_causal=True
+        )  # (B x H x T x M/H)
 
         attended_output = (
             attended_output.transpose(1, 2)  # (B x T x H x M/H)
@@ -112,15 +111,14 @@ class DecoderLayer(nn.Module):
         self.mlp_layer_norm = LayerNorm(Config.dim_model)
 
     def forward(self, x) -> torch.Tensor:
-        x = self.attention_layer_norm(x)
-        z = self.attention(x)  # (B x T x M)
-        z = x + self.attention_dropout(z)
+        # residual connections
 
-        z = self.mlp_layer_norm(z)
-        r = self.mlp(z)  # (B x T x M)
-        r = z + self.mlp_dropout(r)
+        x = x + self.attention_dropout(
+            self.attention(self.attention_layer_norm(x))
+        )  # (B x T x M)
+        x = x + self.mlp_dropout(self.mlp(self.mlp_layer_norm(x)))  # (B x T x M)
 
-        return r  # (B x T x M)
+        return x
 
 
 class Decoder(nn.Module):
@@ -138,8 +136,12 @@ class Decoder(nn.Module):
 class Embeddings(nn.Module):
     def __init__(self) -> None:
         super(Embeddings, self).__init__()
-        self.token_embeddings = nn.Embedding(Config.vocab_size, Config.dim_model)
-        self.positional_embeddings = nn.Embedding(Config.vocab_size, Config.dim_model)
+        self.token_embeddings = nn.Embedding(
+            Config.vocab_size, Config.dim_model, padding_idx=Config.padding_idx
+        )
+        self.positional_embeddings = nn.Embedding(
+            Config.vocab_size, Config.dim_model, padding_idx=Config.padding_idx
+        )
 
     def forward(self, indices) -> torch.Tensor:
         _, token_sequence_length = indices.size()  # (B x T)
@@ -155,16 +157,68 @@ class Embeddings(nn.Module):
 class Transformer(nn.Module):
     def __init__(self, Config=Config) -> None:
         super(Transformer, self).__init__()
+        self.layer_sqrt_scale = (2 * Config.layers) ** (-0.5)
         self.embeddings = Embeddings()
         self.decoder = Decoder()
         self.prediction_head = nn.Linear(
             Config.dim_model, Config.vocab_size, bias=False
         )
+        # Setup weight sharing of the token embeddings and final
+        self.prediction_head.weight = self.embeddings.token_embeddings.weight
         print(
             f"Model parameters: {numerize(sum([p.numel() for p in self.parameters()]))}"
         )
 
+        self.apply(self.init_weights)
+
+    def setup_optimizer(self, weight_decay, learning_rate, is_gpu) -> AdamW:
+        # apparently layer norms and biases should not have weight decay
+        # according to Andrej Karpathy's GPT 2 reproduction
+        params = {
+            name: param
+            for name, param in self.named_parameters()
+            if param.requires_grad
+        }
+
+        decay = [param for _, param in params.items() if param.dim() >= 2]
+        no_decay = [param for _, param in params.items() if param.dim() < 2]
+        optim_groups = [
+            {"params": decay, "weight_decay": weight_decay},
+            {"params": no_decay, "weight_decay": 0.0},
+        ]
+        return AdamW(
+            optim_groups,
+            weight_decay=weight_decay,
+            betas=(0.9, 0.95),
+            lr=learning_rate,
+            fused=is_gpu,
+        )
+
+    def init_weights(self, module: nn.Module) -> None:
+        # Setup initializations based on GPT 2
+        # LayerNorm is already initialized correctly
+        if isinstance(module, MLP):
+            nn.init.normal_(module.w1.weight, mean=0.0, std=0.02)
+            nn.init.zeros_(module.w1.bias)
+
+            nn.init.normal_(
+                module.w2.weight, mean=0.0, std=0.02 * self.layer_sqrt_scale
+            )
+            nn.init.zeros_(module.w2.bias)
+        elif isinstance(module, MultiHeadAttention):
+            nn.init.normal_(module.combined_linear.weight, mean=0.0, std=0.02)
+            nn.init.zeros_(module.combined_linear.bias)
+
+            nn.init.normal_(
+                module.output_linear.weight, mean=0.0, std=0.02 * self.layer_sqrt_scale
+            )
+            nn.init.zeros_(module.output_linear.bias)
+        elif isinstance(module, Embeddings):
+            nn.init.normal_(module.token_embeddings.weight, mean=0.0, std=0.02)
+            nn.init.normal_(module.positional_embeddings.weight, mean=0.0, std=0.01)
+
     def forward(self, tokens) -> torch.Tensor:
+        # tokens are (B x T)
         embeddings = self.embeddings(tokens)  # (B x T x M)
         attended_embeddings = self.decoder(embeddings)  # (B x T x M)
         logits = self.prediction_head(attended_embeddings)  # (B x T x V)

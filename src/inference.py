@@ -4,9 +4,9 @@ import torch
 import tqdm
 from pprint import pprint
 
-from config import Config
-from model import Transformer
-from utils import get_device, setup_tokenizer
+from src.config import Config
+from src.model import Transformer
+from src.utils import get_device, setup_tokenizer
 
 
 def inference(args: Namespace) -> None:
